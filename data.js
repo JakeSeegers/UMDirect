@@ -453,11 +453,103 @@ async function processRoomData(data) {
     // Hidden feature: Log deduplication silently (dev console only, no user notification)
     if (hiddenDuplicatesSkipped > 0 || hiddenRoomsUpdated > 0) {
         console.log(`🔒 Hidden deduplication: ${hiddenDuplicatesSkipped} duplicates prevented, ${hiddenRoomsUpdated} rooms updated, ${processed.length} new rooms added`);
-        // Note: Removed addError() call to keep this feature hidden from users
     }
 
     updateLoadingStatus('Creating search index...');
     await createSearchIndex();
+}
+
+// 🔒 HIDDEN FEATURE: Post-processing duplicate cleanup
+function cleanupExistingDuplicates() {
+    if (state.processedData.length === 0) return;
+    
+    const uniqueRooms = new Map();
+    const duplicatesFound = [];
+    let cleanedCount = 0;
+    
+    // Build a map of unique rooms using multiple identification strategies
+    state.processedData.forEach((room, index) => {
+        let uniqueKey = null;
+        
+        // Strategy 1: Use rmrecnbr if available (most reliable)
+        if (room.rmrecnbr) {
+            uniqueKey = `rec_${room.rmrecnbr}`;
+        }
+        // Strategy 2: Use composite key of room number + floor + building
+        else {
+            const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+            uniqueKey = `comp_${room.rmnbr}_${room.floor}_${building}`;
+        }
+        
+        if (uniqueRooms.has(uniqueKey)) {
+            // Found duplicate - keep the first one, mark this for removal
+            duplicatesFound.push(index);
+            cleanedCount++;
+        } else {
+            uniqueRooms.set(uniqueKey, room);
+        }
+    });
+    
+    // Remove duplicates by filtering out the marked indices
+    if (duplicatesFound.length > 0) {
+        // Create new array without duplicates, preserving custom/staff tags for kept rooms
+        const cleanedData = state.processedData.filter((room, index) => {
+            const shouldKeep = !duplicatesFound.includes(index);
+            
+            // If we're removing this room, transfer its tags to the kept duplicate
+            if (!shouldKeep) {
+                const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+                const uniqueKey = room.rmrecnbr ? `rec_${room.rmrecnbr}` : `comp_${room.rmnbr}_${room.floor}_${building}`;
+                const keptRoom = Array.from(uniqueRooms.values()).find(r => {
+                    const keptKey = r.rmrecnbr ? `rec_${r.rmrecnbr}` : `comp_${r.rmnbr}_${r.floor}_${(r.bld_descrshort || r.building || 'unknown').toLowerCase().trim()}`;
+                    return keptKey === uniqueKey;
+                });
+                
+                if (keptRoom) {
+                    // Transfer custom tags
+                    const removedCustomTags = state.customTags[room.id] || [];
+                    const keptCustomTags = state.customTags[keptRoom.id] || [];
+                    if (removedCustomTags.length > 0) {
+                        state.customTags[keptRoom.id] = [...keptCustomTags, ...removedCustomTags];
+                        delete state.customTags[room.id];
+                    }
+                    
+                    // Transfer staff tags
+                    const removedStaffTags = state.staffTags[room.id] || [];
+                    const keptStaffTags = state.staffTags[keptRoom.id] || [];
+                    if (removedStaffTags.length > 0) {
+                        // Merge and deduplicate staff tags
+                        state.staffTags[keptRoom.id] = [...new Set([...keptStaffTags, ...removedStaffTags])];
+                        delete state.staffTags[room.id];
+                    }
+                }
+            }
+            
+            return shouldKeep;
+        });
+        
+        state.processedData = cleanedData;
+        
+        // Reassign sequential IDs to prevent gaps
+        state.processedData.forEach((room, index) => {
+            const oldId = room.id;
+            room.id = index;
+            
+            // Update tag references if ID changed
+            if (oldId !== index) {
+                if (state.customTags[oldId]) {
+                    state.customTags[index] = state.customTags[oldId];
+                    delete state.customTags[oldId];
+                }
+                if (state.staffTags[oldId]) {
+                    state.staffTags[index] = state.staffTags[oldId];
+                    delete state.staffTags[oldId];
+                }
+            }
+        });
+        
+        console.log(`🔒 Hidden cleanup: Removed ${cleanedCount} duplicate rooms, preserved all tags`);
+    }
 }
 
 // 🔒 HIDDEN FEATURE: Post-processing duplicate cleanup
@@ -1217,6 +1309,8 @@ async function handleFiles(files) {
     // 🔒 HIDDEN FEATURE: Clean up any remaining duplicates after all processing
     if (state.processedData.length > 0) {
         cleanupExistingDuplicates();
+        // Re-create search index after cleanup
+        await createSearchIndex();
     }
 
     updateFilesListUI(); // Direct call to ui.js function
@@ -1234,6 +1328,42 @@ async function handleFiles(files) {
 
     showLoading(false);
     setProcessingState(false, elements.processingIndicator);
+    
+    // 🔧 FINAL FIX: Force-enable search inputs after everything is completely done
+    setTimeout(() => {
+        console.log('🔧 Final search input check...');
+        
+        // Check current state
+        const searchInput = document.getElementById('search-input');
+        const searchInputMobile = document.getElementById('search-input-mobile');
+        
+        console.log('Search input disabled?', searchInput ? searchInput.disabled : 'not found');
+        console.log('Search input mobile disabled?', searchInputMobile ? searchInputMobile.disabled : 'not found');
+        
+        // Force enable multiple ways
+        if (searchInput) {
+            searchInput.disabled = false;
+            searchInput.removeAttribute('disabled');
+            console.log('✅ Desktop search input force-enabled');
+        }
+        if (searchInputMobile) {
+            searchInputMobile.disabled = false;
+            searchInputMobile.removeAttribute('disabled');
+            console.log('✅ Mobile search input force-enabled');
+        }
+        
+        // Also through elements object
+        if (window.elements && window.elements.searchInput) {
+            window.elements.searchInput.disabled = false;
+            window.elements.searchInput.removeAttribute('disabled');
+        }
+        if (window.elements && window.elements.searchInputMobile) {
+            window.elements.searchInputMobile.disabled = false;
+            window.elements.searchInputMobile.removeAttribute('disabled');
+        }
+        
+        console.log('🔧 Search inputs should now be enabled');
+    }, 500); // Longer delay to run after everything else
 }
 
 // Make handleFiles globally accessible (this fixes the "handleFiles is not defined" error)
@@ -1379,3 +1509,17 @@ window.debugBuildings = debugBuildings;
 window.debugRoomTags = debugRoomTags;
 window.debugFilters = debugFilters;
 window.testSearchPatterns = testSearchPatterns;
+
+// Make essential functions globally accessible
+window.handleFiles = handleFiles;
+window.exportCustomTags = exportCustomTags;
+window.importCustomTags = importCustomTags;
+window.exportSession = exportSession;
+window.importSession = importSession;
+window.data_getFilteredData = data_getFilteredData;
+window.createSearchIndex = createSearchIndex;
+window.updateAutocomplete = updateAutocomplete;
+window.hideAutocomplete = hideAutocomplete;
+window.handleAutocompleteKeydown = handleAutocompleteKeydown;
+window.normalizeAbbreviation = normalizeAbbreviation;
+window.generateTags = generateTags;
