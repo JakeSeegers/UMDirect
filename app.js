@@ -45,6 +45,21 @@ function hideMgisComplianceModal() {
 
 // --- WORKSPACE COLLABORATION MODAL FUNCTIONS ---
 function handleCollaborationButtonClick() {
+    // 🔧 FIX: Check if workspaceCollaboration exists first
+    if (!window.workspaceCollaboration) {
+        console.error('❌ Workspace collaboration not loaded yet');
+        alert('Workspace system is still loading. Please wait a moment and try again.');
+        return;
+    }
+    
+    // 🔧 FIX: Check if collaborationState exists
+    if (!window.workspaceCollaboration.collaborationState) {
+        console.error('❌ Collaboration state not initialized');
+        alert('Workspace system not ready. Please refresh the page.');
+        return;
+    }
+    
+    // Now safely check if online
     if (window.workspaceCollaboration.collaborationState.isOnline) {
         // Already connected, offer to leave workspace
         const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace?.name;
@@ -198,26 +213,85 @@ async function joinWorkspace() {
     }
 }
 
+// 🔧 FIXED: Better workspace connection checking
+function updateWorkspaceTaggingOption() {
+    const workspaceOption = document.getElementById('workspace-sharing-option');
+    const workspaceNameDisplay = document.getElementById('workspace-name-display');
+    
+    // 🔧 IMPROVED: More robust connection checking
+    const isConnected = !!(
+        window.workspaceCollaboration &&
+        window.workspaceCollaboration.collaborationState &&
+        window.workspaceCollaboration.collaborationState.isOnline &&
+        window.workspaceCollaboration.collaborationState.currentWorkspace &&
+        window.workspaceCollaboration.collaborationState.currentUser
+    );
+    
+    if (isConnected) {
+        const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace.name;
+        if (workspaceOption && workspaceNameDisplay) {
+            workspaceNameDisplay.textContent = workspaceName || 'Unknown';
+            workspaceOption.style.display = 'block';
+        }
+        console.log(`✅ Workspace sharing option shown for: ${workspaceName}`);
+    } else {
+        if (workspaceOption) {
+            workspaceOption.style.display = 'none';
+        }
+        console.log('⚠️ Workspace sharing option hidden - not connected');
+    }
+}
+
+// 🔧 IMPROVED: Better collaboration UI updates
 function updateCollaborationUI() {
     const collabButton = elements.collaborationBtn;
     const collabStatus = elements.collaborationStatus;
     
-    if (window.workspaceCollaboration.collaborationState.isOnline) {
+    // 🔧 BETTER: More robust state checking
+    const isOnline = !!(
+        window.workspaceCollaboration?.collaborationState?.isOnline &&
+        window.workspaceCollaboration?.collaborationState?.currentWorkspace &&
+        window.workspaceCollaboration?.collaborationState?.currentUser
+    );
+    
+    if (isOnline) {
         const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace?.name;
+        const currentUser = window.workspaceCollaboration.collaborationState.currentUser?.name;
+        const workspaceCreator = window.workspaceCollaboration.collaborationState.currentWorkspace?.created_by;
+        const isAdmin = currentUser === workspaceCreator;
         
         if (collabButton) {
             collabButton.innerHTML = `
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
                 </svg>
-                Connected: ${workspaceName}
+                ${isAdmin ? '👑 ' : ''}Connected: ${workspaceName}
             `;
             collabButton.classList.remove('um-button-blue');
             collabButton.classList.add('um-button-maize');
+            collabButton.title = isAdmin ? 'You are the workspace admin' : 'Connected to workspace';
         }
         
         if (collabStatus) {
             collabStatus.classList.remove('hidden');
+            
+            // 🔧 NEW: Show admin status in collaboration status
+            const adminBadge = isAdmin ? '<span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 ml-2">👑 Admin</span>' : '';
+            
+            // Update the collaboration status content
+            const statusContent = collabStatus.querySelector('.flex-grow');
+            if (statusContent) {
+                statusContent.innerHTML = `
+                    <h4 class="font-medium text-green-800 mb-2 flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z"/>
+                        </svg>
+                        Team Collaboration Active${adminBadge}
+                    </h4>
+                    <p class="text-green-700 text-sm mb-2">Your custom tags are shared with your team in real-time.</p>
+                    ${isAdmin ? '<p class="text-yellow-700 text-sm mb-2"><strong>Admin privileges:</strong> You can delete any team member\'s tags.</p>' : ''}
+                `;
+            }
         }
     } else {
         if (collabButton) {
@@ -229,21 +303,26 @@ function updateCollaborationUI() {
             `;
             collabButton.classList.remove('um-button-maize');
             collabButton.classList.add('um-button-blue');
+            collabButton.title = 'Join a workspace to collaborate';
         }
         
         if (collabStatus) {
             collabStatus.classList.add('hidden');
         }
     }
+    
+    // 🔧 NEW: Update workspace tagging option visibility
+    updateWorkspaceTaggingOption();
 }
 
+// 🔧 ENHANCED: Better notification with user context
 function showCollaborationNotification(message) {
-    // Create a toast notification
+    // Create a toast notification with better styling
     const notification = document.createElement('div');
-    notification.className = 'fixed top-16 right-4 bg-blue-100 border border-blue-300 text-blue-800 px-4 py-2 rounded-lg shadow-lg z-50 animate-fade-in';
+    notification.className = 'fixed top-16 right-4 bg-blue-100 border border-blue-300 text-blue-800 px-4 py-2 rounded-lg shadow-lg z-50 animate-fade-in max-w-sm';
     notification.innerHTML = `
-        <div class="flex items-center gap-2">
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+        <div class="flex items-start gap-2">
+            <svg class="w-4 h-4 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z"/>
             </svg>
             <span class="text-sm">${sanitizeHTML(message)}</span>
@@ -252,15 +331,16 @@ function showCollaborationNotification(message) {
     
     document.body.appendChild(notification);
     
-    // Remove after 4 seconds
+    // Auto-remove after 5 seconds with fade animation
     setTimeout(() => {
         notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
         setTimeout(() => {
             if (document.body.contains(notification)) {
                 document.body.removeChild(notification);
             }
         }, 300);
-    }, 4000);
+    }, 5000);
 }
 
 function displayTagInfo(tag) {
@@ -284,24 +364,6 @@ function displayTagInfo(tag) {
     elements.tagInfoModal.classList.remove('hidden');
 }
 window.displayTagInfo = displayTagInfo; // Make global for ui.js
-
-// 🎯 NEW: Update workspace tagging option visibility
-function updateWorkspaceTaggingOption() {
-    const workspaceOption = document.getElementById('workspace-sharing-option');
-    const workspaceNameDisplay = document.getElementById('workspace-name-display');
-    
-    if (window.workspaceCollaboration?.collaborationState?.isOnline) {
-        const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace?.name;
-        if (workspaceOption && workspaceNameDisplay) {
-            workspaceNameDisplay.textContent = workspaceName || 'Unknown';
-            workspaceOption.style.display = 'block';
-        }
-    } else {
-        if (workspaceOption) {
-            workspaceOption.style.display = 'none';
-        }
-    }
-}
 
 // 🎯 UPDATED: Handle add tag click with workspace option
 function handleAddTagClick(roomId) {
@@ -384,7 +446,7 @@ function createTagElementInModal(tagData, type, removable) {
     return span;
 }
 
-// 🎯 UPDATED: Add rich tag from modal with workspace sharing option
+// 🔧 FIXED: Enhanced addRichTagFromModal with better error handling
 async function addRichTagFromModal() {
     if (!currentRoomIdForModal) return;
     const name = elements.tagNameInput?.value?.trim() || '';
@@ -398,10 +460,10 @@ async function addRichTagFromModal() {
     const selectedColorEl = document.querySelector('#custom-tag-modal .color-option.selected');
     const color = selectedColorEl ? selectedColorEl.dataset.color : 'blue';
     
-    // 🎯 NEW: Check if user wants to share to workspace
+    // 🔧 IMPROVED: Better workspace connection check with fresh state
     const shareToWorkspace = document.getElementById('share-to-workspace-checkbox')?.checked || false;
     
-    const newRichTag = createRichTag(name, type, description, link, contact, imageUrl, color); // Direct call to utils.js function
+    const newRichTag = createRichTag(name, type, description, link, contact, imageUrl, color);
 
     if (!state.customTags[currentRoomIdForModal]) state.customTags[currentRoomIdForModal] = [];
     if (state.customTags[currentRoomIdForModal].some(tag => tag.name.toLowerCase() === newRichTag.name.toLowerCase())) {
@@ -411,52 +473,102 @@ async function addRichTagFromModal() {
     // Add to local state first
     state.customTags[currentRoomIdForModal].push(newRichTag);
     
-    // 🎯 NEW: Save to workspace if user chose to share AND connected
-    if (shareToWorkspace && window.workspaceCollaboration.collaborationState.isOnline) {
-        console.log('🔄 Sharing tag to workspace...', newRichTag);
+    // 🔧 IMPROVED: Better workspace sharing logic with comprehensive checks
+    if (shareToWorkspace) {
+        console.log('🔄 Attempting to share tag to workspace...', newRichTag);
         
-        // 🔍 COMPREHENSIVE DEBUG
-        console.log('🔍 window.workspaceCollaboration exists:', !!window.workspaceCollaboration);
-        console.log('🔍 saveTagToWorkspace function exists:', !!window.workspaceCollaboration?.saveTagToWorkspace);
-        console.log('🔍 collaborationState:', window.workspaceCollaboration?.collaborationState);
-        console.log('🔍 currentRoomIdForModal:', currentRoomIdForModal);
-        console.log('🔍 state.processedData length:', state?.processedData?.length);
+        // 🔧 COMPREHENSIVE: Check all required workspace components
+        const workspaceReady = !!(
+            window.workspaceCollaboration &&
+            typeof window.workspaceCollaboration.saveTagToWorkspace === 'function' &&
+            window.workspaceCollaboration.collaborationState &&
+            window.workspaceCollaboration.collaborationState.isOnline &&
+            window.workspaceCollaboration.collaborationState.currentWorkspace &&
+            window.workspaceCollaboration.collaborationState.currentUser &&
+            window.workspaceCollaboration.supabaseClient
+        );
         
-        // Check if the function exists
-        if (!window.workspaceCollaboration?.saveTagToWorkspace) {
-            console.error('❌ saveTagToWorkspace function not found!');
-            alert('Workspace function not available. Check console for details.');
-            return;
-        }
+        console.log('🔍 Workspace readiness check:', {
+            workspaceCollaboration: !!window.workspaceCollaboration,
+            saveFunction: !!(window.workspaceCollaboration?.saveTagToWorkspace),
+            collaborationState: !!(window.workspaceCollaboration?.collaborationState),
+            isOnline: window.workspaceCollaboration?.collaborationState?.isOnline,
+            currentWorkspace: !!(window.workspaceCollaboration?.collaborationState?.currentWorkspace),
+            currentUser: !!(window.workspaceCollaboration?.collaborationState?.currentUser),
+            supabaseClient: !!(window.workspaceCollaboration?.supabaseClient),
+            overall: workspaceReady
+        });
         
-        try {
-            console.log('🔍 About to call saveTagToWorkspace...');
-            const success = await window.workspaceCollaboration.saveTagToWorkspace(currentRoomIdForModal, newRichTag);
-            console.log('🔍 saveTagToWorkspace returned:', success, typeof success);
-            
-            if (success === true) {
-                // Mark as workspace tag
-                newRichTag.workspace = true;
-                newRichTag.created_by = window.workspaceCollaboration.collaborationState.currentUser?.name;
-                console.log('✅ Tag shared to workspace successfully');
+        if (workspaceReady) {
+            try {
+                console.log('🔄 Calling saveTagToWorkspace...');
+                const success = await window.workspaceCollaboration.saveTagToWorkspace(currentRoomIdForModal, newRichTag);
+                console.log('🔍 saveTagToWorkspace returned:', success, typeof success);
                 
-                // Show success notification
-                const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace?.name;
-                showCollaborationNotification(`✅ Tag "${newRichTag.name}" shared with "${workspaceName}"`);
-            } else {
-                console.error('❌ Failed to share tag to workspace - function returned:', success);
-                alert('Failed to share tag to workspace. Tag saved locally only.');
+                if (success === true) {
+                    // Mark as workspace tag
+                    newRichTag.workspace = true;
+                    newRichTag.created_by = window.workspaceCollaboration.collaborationState.currentUser.name;
+                    console.log('✅ Tag shared to workspace successfully');
+                    
+                    const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace.name;
+                    showCollaborationNotification(`✅ Tag "${newRichTag.name}" shared with "${workspaceName}"`);
+                } else {
+                    console.error('❌ Failed to share tag to workspace - function returned:', success);
+                    
+                    // 🔧 BETTER: More specific error handling
+                    if (success === false) {
+                        // Check if it's a duplicate error by looking for existing tag
+                        const existingTag = state.customTags[currentRoomIdForModal]?.find(tag => 
+                            tag.name === newRichTag.name && tag.workspace
+                        );
+                        
+                        if (existingTag) {
+                            alert(`A workspace tag named "${newRichTag.name}" already exists for this room. Please choose a different name.`);
+                            // Remove the local tag we just added since it conflicts
+                            state.customTags[currentRoomIdForModal] = state.customTags[currentRoomIdForModal].filter(tag => tag.id !== newRichTag.id);
+                            clearTagForm();
+                            updateCustomTagsModalDisplay();
+                            return; // Don't continue with the process
+                        } else {
+                            alert('Failed to share tag to workspace. Tag saved locally only.');
+                        }
+                    } else {
+                        alert('Failed to share tag to workspace. Tag saved locally only.');
+                    }
+                }
+            } catch (error) {
+                console.error('❌ Error sharing tag to workspace:', error);
+                console.error('❌ Error details:', error.message, error.stack);
+                
+                // 🔧 BETTER: Handle specific error types
+                if (error.message && error.message.includes('duplicate key')) {
+                    alert(`A workspace tag named "${newRichTag.name}" already exists for this room. Please choose a different name.`);
+                    // Remove the local tag since it conflicts
+                    state.customTags[currentRoomIdForModal] = state.customTags[currentRoomIdForModal].filter(tag => tag.id !== newRichTag.id);
+                    clearTagForm();
+                    updateCustomTagsModalDisplay();
+                    return;
+                } else {
+                    alert('Error sharing tag to workspace: ' + error.message + '\nTag saved locally only.');
+                }
             }
-        } catch (error) {
-            console.error('❌ Error sharing tag to workspace:', error);
-            console.error('❌ Error details:', error.message, error.stack);
-            alert('Error sharing tag to workspace: ' + error.message);
+        } else {
+            console.warn('⚠️ Workspace not ready for sharing');
+            console.log('🔍 Missing components:', {
+                workspaceCollaboration: !window.workspaceCollaboration,
+                saveFunction: !window.workspaceCollaboration?.saveTagToWorkspace,
+                collaborationState: !window.workspaceCollaboration?.collaborationState,
+                isOnline: !window.workspaceCollaboration?.collaborationState?.isOnline,
+                currentWorkspace: !window.workspaceCollaboration?.collaborationState?.currentWorkspace,
+                currentUser: !window.workspaceCollaboration?.collaborationState?.currentUser,
+                supabaseClient: !window.workspaceCollaboration?.supabaseClient
+            });
+            
+            alert('Not properly connected to workspace. Tag saved locally only.\n\nPlease ensure you\'re connected to a workspace and try again.');
         }
-    } else if (shareToWorkspace && !window.workspaceCollaboration?.collaborationState?.isOnline) {
-        console.warn('⚠️ Not connected to workspace');
-        alert('Not connected to workspace. Tag saved locally only.');
     } else {
-        console.log('🔍 Workspace sharing skipped - shareToWorkspace:', shareToWorkspace, 'isOnline:', window.workspaceCollaboration?.collaborationState?.isOnline);
+        console.log('🔍 Workspace sharing skipped - checkbox not checked');
     }
     
     clearTagForm();
@@ -484,33 +596,98 @@ async function saveCustomTagsFromModal() {
     await updateResults();       // Direct call to ui.js function
 }
 
+// 🔧 FIXED: Enhanced removeCustomTag with admin system support
 async function removeCustomTag(tagId, roomId) {
-    if (!roomId || !tagId) return;
-    
-    const roomTags = state.customTags[roomId];
-    if (!roomTags) return;
-    
-    const tagIndex = roomTags.findIndex(tag => tag.id.toString() === tagId.toString());
-    if (tagIndex === -1) return;
-    
-    const tagToRemove = roomTags[tagIndex];
-    
-    // Remove from workspace if it's a workspace tag
-    if (tagToRemove.workspace && window.workspaceCollaboration.collaborationState.isOnline) {
-        try {
-            const success = await window.workspaceCollaboration.removeTagFromWorkspace(roomId, tagToRemove);
-            if (success) {
-                showCollaborationNotification(`🗑️ Tag "${tagToRemove.name}" removed from workspace`);
-            }
-        } catch (error) {
-            console.error('Failed to delete tag from workspace:', error);
-            // Continue with local deletion
-        }
+    if (!roomId || !tagId) {
+        console.error('❌ removeCustomTag: Missing roomId or tagId');
+        return;
     }
     
-    // Remove from local state
-    roomTags.splice(tagIndex, 1);
+    const roomTags = state.customTags[roomId];
+    if (!roomTags) {
+        console.error('❌ removeCustomTag: No tags found for room', roomId);
+        return;
+    }
+    
+    const tagIndex = roomTags.findIndex(tag => tag.id.toString() === tagId.toString());
+    if (tagIndex === -1) {
+        console.error('❌ removeCustomTag: Tag not found', tagId);
+        return;
+    }
+    
+    const tagToRemove = roomTags[tagIndex];
+    console.log(`🗑️ removeCustomTag: Removing "${tagToRemove.name}" (workspace: ${!!tagToRemove.workspace})`);
+    
+    // 🔧 IMPROVED: Handle workspace tags with admin system
+    if (tagToRemove.workspace) {
+        // Check if workspace collaboration is available
+        const workspaceReady = !!(
+            window.workspaceCollaboration &&
+            window.workspaceCollaboration.collaborationState &&
+            window.workspaceCollaboration.collaborationState.isOnline &&
+            typeof window.workspaceCollaboration.removeTagFromWorkspace === 'function'
+        );
+        
+        if (workspaceReady) {
+            console.log('🔄 Attempting workspace tag deletion...');
+            
+            try {
+                const success = await window.workspaceCollaboration.removeTagFromWorkspace(roomId, tagToRemove);
+                
+                if (success) {
+                    console.log('✅ Workspace tag deleted successfully');
+                    
+                    // 🔧 BETTER: Show admin action notification
+                    const currentUser = window.workspaceCollaboration.collaborationState.currentUser?.name;
+                    const workspaceCreator = window.workspaceCollaboration.collaborationState.currentWorkspace?.created_by;
+                    const isAdmin = currentUser === workspaceCreator;
+                    const isCreator = tagToRemove.created_by === currentUser;
+                    
+                    if (isAdmin && !isCreator) {
+                        showCollaborationNotification(`👑 Admin deleted "${tagToRemove.name}" created by ${tagToRemove.created_by}`);
+                    } else {
+                        showCollaborationNotification(`🗑️ Deleted "${tagToRemove.name}"`);
+                    }
+                    
+                    // Remove from local state (workspace deletion should have handled this, but ensure it's gone)
+                    roomTags.splice(tagIndex, 1);
+                } else {
+                    console.error('❌ Workspace tag deletion failed');
+                    // Don't remove from local state if workspace deletion failed
+                    return;
+                }
+            } catch (error) {
+                console.error('❌ Error deleting workspace tag:', error);
+                
+                // 🔧 BETTER: Handle permission errors gracefully
+                if (error.message && error.message.includes('Permission denied')) {
+                    // The error was already shown to user via alert in removeTagFromWorkspace
+                    return; // Don't remove from local state
+                } else {
+                    alert('Error deleting workspace tag: ' + error.message);
+                    return; // Don't remove from local state
+                }
+            }
+        } else {
+            console.warn('⚠️ Workspace not available - removing tag locally only');
+            alert('Warning: Not connected to workspace. Tag will be removed locally but may reappear when you reconnect.');
+            
+            // Remove from local state only
+            roomTags.splice(tagIndex, 1);
+        }
+    } else {
+        // Local tag - remove directly
+        console.log('🗑️ Removing local tag');
+        roomTags.splice(tagIndex, 1);
+    }
+    
+    // Update the modal display
     updateCustomTagsModalDisplay();
+    
+    // Update the main UI if needed
+    if (typeof updateResults === 'function') {
+        updateResults();
+    }
 }
 
 function goToPage(pageNumber) {
@@ -718,15 +895,93 @@ function setupEventListeners() {
     }
 }
 
-// Initialize workspace collaboration
+// 🔧 IMPROVED: Initialize workspace collaboration with better error handling
 async function initializeWorkspaceCollaboration() {
-    if (window.workspaceCollaboration) {
-        const initialized = await window.workspaceCollaboration.initializeSupabase();
-        if (initialized) {
-            console.log('✅ Workspace collaboration system ready');
+    try {
+        if (window.workspaceCollaboration) {
+            console.log('🔄 Initializing workspace collaboration...');
+            const initialized = await window.workspaceCollaboration.initializeSupabase();
+            
+            if (initialized) {
+                console.log('✅ Workspace collaboration system ready');
+                
+                // 🔧 NEW: Set up periodic connection health checks
+                setInterval(() => {
+                    const isOnline = window.workspaceCollaboration?.collaborationState?.isOnline;
+                    const hasWorkspace = window.workspaceCollaboration?.collaborationState?.currentWorkspace;
+                    
+                    if (isOnline && hasWorkspace) {
+                        // Periodically update UI to ensure consistency
+                        updateCollaborationUI();
+                    }
+                }, 30000); // Check every 30 seconds
+                
+            } else {
+                console.error('❌ Failed to initialize workspace collaboration');
+            }
+        } else {
+            console.warn('⚠️ Workspace collaboration not available');
         }
+    } catch (error) {
+        console.error('❌ Error initializing workspace collaboration:', error);
     }
 }
+
+// 🔧 IMPROVED: Better cleanup on page unload
+function setupWorkspaceCleanup() {
+    // Enhanced cleanup that handles various scenarios
+    const cleanup = () => {
+        try {
+            if (window.workspaceCollaboration?.collaborationState?.isOnline) {
+                console.log('🧹 Cleaning up workspace connection...');
+                window.workspaceCollaboration.leaveWorkspace();
+            }
+        } catch (error) {
+            console.error('❌ Error during workspace cleanup:', error);
+        }
+    };
+    
+    // Handle multiple cleanup scenarios
+    window.addEventListener('beforeunload', cleanup);
+    window.addEventListener('pagehide', cleanup);
+    window.addEventListener('unload', cleanup);
+    
+    // Handle visibility change (tab switching, minimizing)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            // Re-check workspace connection when tab becomes visible
+            setTimeout(() => {
+                if (window.workspaceCollaboration?.collaborationState?.isOnline) {
+                    updateCollaborationUI();
+                }
+            }, 1000);
+        }
+    });
+}
+
+// 🔧 NEW: Utility function to check workspace health
+function checkWorkspaceHealth() {
+    const health = {
+        workspaceCollaboration: !!window.workspaceCollaboration,
+        collaborationState: !!window.workspaceCollaboration?.collaborationState,
+        isOnline: window.workspaceCollaboration?.collaborationState?.isOnline,
+        currentWorkspace: !!window.workspaceCollaboration?.collaborationState?.currentWorkspace,
+        currentUser: !!window.workspaceCollaboration?.collaborationState?.currentUser,
+        supabaseClient: !!window.workspaceCollaboration?.supabaseClient,
+        activeChannel: !!window.workspaceCollaboration?.collaborationState?.activeChannel
+    };
+    
+    const allHealthy = Object.values(health).every(Boolean);
+    
+    console.log('🔍 Workspace Health Check:', health);
+    console.log(`Overall Health: ${allHealthy ? '✅ Healthy' : '❌ Issues detected'}`);
+    
+    return { health, allHealthy };
+}
+
+// Make utility functions globally available for debugging
+window.checkWorkspaceHealth = checkWorkspaceHealth;
+window.updateWorkspaceTaggingOption = updateWorkspaceTaggingOption;
 
 document.addEventListener('DOMContentLoaded', () => {
     const elementIds = [
@@ -774,13 +1029,9 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDataSummary();        // Direct call to ui.js function
     updateUploadAreaState();    // Direct call to ui.js function
     
-    // Initialize workspace collaboration
+    // Initialize workspace collaboration with better error handling
     initializeWorkspaceCollaboration();
     
-    // Cleanup on page unload
-    window.addEventListener('beforeunload', () => {
-        if (window.workspaceCollaboration) {
-            window.workspaceCollaboration.leaveWorkspace();
-        }
-    });
+    // 🔧 NEW: Set up workspace cleanup
+    setupWorkspaceCleanup();
 });
