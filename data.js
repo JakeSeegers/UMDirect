@@ -324,9 +324,7 @@ function calculateTermMatch(term, room, roomTags) {
     return { matched, score };
 }
 
-// Replace the existing duplicate handling logic in data.js processRoomData function
-// Around lines 185-230, replace the duplicate detection section with this:
-
+// UPDATED processRoomData function with enhanced duplicate detection
 async function processRoomData(data) {
     updateLoadingStatus('Processing room data...');
     const processed = [];
@@ -461,6 +459,101 @@ async function processRoomData(data) {
     updateLoadingStatus('Creating search index...');
     await createSearchIndex();
 }
+
+// 🔒 HIDDEN FEATURE: Post-processing duplicate cleanup
+// This runs after all files are processed to clean up any existing duplicates in the state
+function cleanupExistingDuplicates() {
+    if (state.processedData.length === 0) return;
+    
+    const uniqueRooms = new Map();
+    const duplicatesFound = [];
+    let cleanedCount = 0;
+    
+    // Build a map of unique rooms using multiple identification strategies
+    state.processedData.forEach((room, index) => {
+        let uniqueKey = null;
+        
+        // Strategy 1: Use rmrecnbr if available (most reliable)
+        if (room.rmrecnbr) {
+            uniqueKey = `rec_${room.rmrecnbr}`;
+        }
+        // Strategy 2: Use composite key of room number + floor + building
+        else {
+            const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+            uniqueKey = `comp_${room.rmnbr}_${room.floor}_${building}`;
+        }
+        
+        if (uniqueRooms.has(uniqueKey)) {
+            // Found duplicate - keep the first one, mark this for removal
+            duplicatesFound.push(index);
+            cleanedCount++;
+        } else {
+            uniqueRooms.set(uniqueKey, room);
+        }
+    });
+    
+    // Remove duplicates by filtering out the marked indices
+    if (duplicatesFound.length > 0) {
+        // Create new array without duplicates, preserving custom/staff tags for kept rooms
+        const cleanedData = state.processedData.filter((room, index) => {
+            const shouldKeep = !duplicatesFound.includes(index);
+            
+            // If we're removing this room, transfer its tags to the kept duplicate
+            if (!shouldKeep) {
+                const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+                const uniqueKey = room.rmrecnbr ? `rec_${room.rmrecnbr}` : `comp_${room.rmnbr}_${room.floor}_${building}`;
+                const keptRoom = Array.from(uniqueRooms.values()).find(r => {
+                    const keptKey = r.rmrecnbr ? `rec_${r.rmrecnbr}` : `comp_${r.rmnbr}_${r.floor}_${(r.bld_descrshort || r.building || 'unknown').toLowerCase().trim()}`;
+                    return keptKey === uniqueKey;
+                });
+                
+                if (keptRoom) {
+                    // Transfer custom tags
+                    const removedCustomTags = state.customTags[room.id] || [];
+                    const keptCustomTags = state.customTags[keptRoom.id] || [];
+                    if (removedCustomTags.length > 0) {
+                        state.customTags[keptRoom.id] = [...keptCustomTags, ...removedCustomTags];
+                        delete state.customTags[room.id];
+                    }
+                    
+                    // Transfer staff tags
+                    const removedStaffTags = state.staffTags[room.id] || [];
+                    const keptStaffTags = state.staffTags[keptRoom.id] || [];
+                    if (removedStaffTags.length > 0) {
+                        // Merge and deduplicate staff tags
+                        state.staffTags[keptRoom.id] = [...new Set([...keptStaffTags, ...removedStaffTags])];
+                        delete state.staffTags[room.id];
+                    }
+                }
+            }
+            
+            return shouldKeep;
+        });
+        
+        state.processedData = cleanedData;
+        
+        // Reassign sequential IDs to prevent gaps
+        state.processedData.forEach((room, index) => {
+            const oldId = room.id;
+            room.id = index;
+            
+            // Update tag references if ID changed
+            if (oldId !== index) {
+                if (state.customTags[oldId]) {
+                    state.customTags[index] = state.customTags[oldId];
+                    delete state.customTags[oldId];
+                }
+                if (state.staffTags[oldId]) {
+                    state.staffTags[index] = state.staffTags[oldId];
+                    delete state.staffTags[oldId];
+                }
+            }
+        });
+        
+        console.log(`🔒 Hidden cleanup: Removed ${cleanedCount} duplicate rooms, preserved all tags`);
+    }
+}
+
 // ==================== EXPORT/IMPORT FUNCTIONS ====================
 
 function exportCustomTags() {
@@ -1011,6 +1104,71 @@ function handleAutocompleteKeydown(e) {
         items[newIndex].setAttribute('aria-selected', 'true');
     }
     state.autocompleteActiveIndex = newIndex;
+}
+
+// ==================== FILE HANDLING FUNCTIONS ====================
+
+// Updated handleFiles function to include cleanup call
+async function handleFiles(files) {
+    if (files.length === 0) return;
+    
+    showLoading(true);
+    setProcessingState(true, elements.processingIndicator);
+    clearErrors();
+    
+    try {
+        for (const file of files) {
+            try {
+                updateLoadingStatus(`Processing ${file.name}...`);
+                
+                if (file.name.endsWith('.umsess')) {
+                    await importSession(file);
+                } else if (file.name.includes('tag') && file.name.endsWith('.json')) {
+                    await importCustomTags(file);
+                } else {
+                    const data = await parseFile(file);
+                    if (data && data.length > 0) {
+                        await processRoomData(data);
+                        state.loadedFiles.push({ 
+                            name: file.name, 
+                            type: 'data', 
+                            status: 'processed',
+                            rowCount: data.length 
+                        });
+                    }
+                }
+            } catch (error) {
+                addError(`Error processing ${file.name}: ${error.message}`);
+                console.error(`Error processing ${file.name}:`, error);
+                state.loadedFiles.push({ 
+                    name: file.name, 
+                    type: 'data', 
+                    status: 'error',
+                    error: error.message 
+                });
+            }
+        }
+        
+        // 🔒 HIDDEN FEATURE: Clean up any remaining duplicates after all processing
+        if (state.processedData.length > 0) {
+            cleanupExistingDuplicates();
+        }
+
+        updateFilesListUI();
+        updateResults();
+        
+        if (state.processedData.length > 0) {
+            console.log(`✅ Successfully processed ${files.length} file(s). Total rooms: ${state.processedData.length}`);
+        }
+        
+    } catch (error) {
+        addError(`File processing error: ${error.message}`);
+        console.error('File processing error:', error);
+    } finally {
+        showLoading(false);
+        setProcessingState(false, elements.processingIndicator);
+        updateLoadingStatus('');
+    }
 }
 
 // ==================== DEBUGGING FUNCTIONS ====================
