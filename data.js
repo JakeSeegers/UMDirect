@@ -1106,70 +1106,150 @@ function handleAutocompleteKeydown(e) {
     state.autocompleteActiveIndex = newIndex;
 }
 
-// ==================== FILE HANDLING FUNCTIONS ====================
+// ==================== FILE PARSING FUNCTIONS ====================
 
-// Updated handleFiles function to include cleanup call
+async function parseFile(file) {
+    const fileType = file.name.split('.').pop().toLowerCase();
+    updateLoadingStatus(`Parsing ${file.name}...`);
+    if (fileType === 'csv') {
+        const text = await file.text();
+        return Papa.parse(text, { header: true, skipEmptyLines: true, dynamicTyping: true }).data;
+    } else if (['xlsx', 'xls'].includes(fileType)) {
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab);
+        return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    }
+    throw new Error('Unsupported file type for parsing.');
+}
+
+async function processOccupantData(data) {
+    updateLoadingStatus('Processing occupant data...');
+    data.forEach(occ => {
+        if (!occ.rmrecnbr || !occ.person_name) return;
+        const room = state.processedData.find(r => String(r.rmrecnbr) === String(occ.rmrecnbr));
+        if (room) {
+            if (!state.staffTags[room.id]) {
+                state.staffTags[room.id] = [];
+            }
+            const staffTag = `Staff: ${occ.person_name.trim()}`;
+            if (!state.staffTags[room.id].includes(staffTag)) {
+                state.staffTags[room.id].push(staffTag);
+            }
+        }
+    });
+    state.currentPage = 1;
+    await createSearchIndex();
+}
+
+async function processRoomDataFiles(files) {
+    let allRoomData = [];
+    for (const file of files) {
+        try {
+            const data = await parseFile(file);
+            allRoomData = allRoomData.concat(data);
+            state.loadedFiles.push({ name: file.name, type: 'room', rows: data.length, status: 'processed' });
+        } catch (e) {
+            addError(`Room Data Error (${file.name}): ${e.message}`);
+            state.loadedFiles.push({ name: file.name, type: 'room', status: 'error', message: e.message });
+        }
+    }
+    if (allRoomData.length > 0) {
+        await processRoomData(allRoomData);
+    }
+}
+
+async function processOccupantDataFiles(files) {
+    let allOccupantData = [];
+    for (const file of files) {
+        try {
+            const data = await parseFile(file);
+            allOccupantData = allOccupantData.concat(data);
+            state.loadedFiles.push({ name: file.name, type: 'occupant', rows: data.length, status: 'processed' });
+        } catch (e) {
+            addError(`Occupant Data Error (${file.name}): ${e.message}`);
+            state.loadedFiles.push({ name: file.name, type: 'occupant', status: 'error', message: e.message });
+        }
+    }
+    if (allOccupantData.length > 0) {
+        await processOccupantData(allOccupantData);
+    }
+}
+
 async function handleFiles(files) {
-    if (files.length === 0) return;
-    
     showLoading(true);
     setProcessingState(true, elements.processingIndicator);
     clearErrors();
-    
-    try {
-        for (const file of files) {
-            try {
-                updateLoadingStatus(`Processing ${file.name}...`);
-                
-                if (file.name.endsWith('.umsess')) {
-                    await importSession(file);
-                } else if (file.name.includes('tag') && file.name.endsWith('.json')) {
-                    await importCustomTags(file);
-                } else {
-                    const data = await parseFile(file);
-                    if (data && data.length > 0) {
-                        await processRoomData(data);
-                        state.loadedFiles.push({ 
-                            name: file.name, 
-                            type: 'data', 
-                            status: 'processed',
-                            rowCount: data.length 
-                        });
-                    }
-                }
-            } catch (error) {
-                addError(`Error processing ${file.name}: ${error.message}`);
-                console.error(`Error processing ${file.name}:`, error);
-                state.loadedFiles.push({ 
-                    name: file.name, 
-                    type: 'data', 
-                    status: 'error',
-                    error: error.message 
-                });
-            }
-        }
-        
-        // 🔒 HIDDEN FEATURE: Clean up any remaining duplicates after all processing
-        if (state.processedData.length > 0) {
-            cleanupExistingDuplicates();
-        }
+    let roomDataFiles = [], occupantDataFiles = [], tagFiles = [], sessionFiles = [];
 
-        updateFilesListUI();
-        updateResults();
-        
-        if (state.processedData.length > 0) {
-            console.log(`✅ Successfully processed ${files.length} file(s). Total rooms: ${state.processedData.length}`);
+    for (const file of files) {
+        const fileType = file.name.split('.').pop().toLowerCase();
+        if (fileType === 'json') {
+            tagFiles.push(file);
+        } else if (fileType === 'umsess') {
+            sessionFiles.push(file);
+        } else if (['xlsx', 'xls', 'csv'].includes(fileType)) {
+            if (file.name.toLowerCase().includes('occupant') || file.name.toLowerCase().includes('staff')) {
+                occupantDataFiles.push(file);
+            } else {
+                roomDataFiles.push(file);
+            }
+        } else {
+            addError(`Unsupported file type: ${file.name}`);
+            state.loadedFiles.push({ name: file.name, type: 'unsupported', status: 'error', message: 'Unsupported type' });
         }
-        
-    } catch (error) {
-        addError(`File processing error: ${error.message}`);
-        console.error('File processing error:', error);
-    } finally {
-        showLoading(false);
-        setProcessingState(false, elements.processingIndicator);
-        updateLoadingStatus('');
     }
+
+    if (sessionFiles.length > 0) {
+        for (const sessionFile of sessionFiles) {
+            await importSession(sessionFile);
+        }
+    }
+    if (roomDataFiles.length > 0) {
+        await processRoomDataFiles(roomDataFiles);
+    }
+    if (occupantDataFiles.length > 0) {
+        await processOccupantDataFiles(occupantDataFiles);
+    }
+    for (const tagFile of tagFiles) {
+        await importCustomTags(tagFile);
+    }
+
+    // 🔒 HIDDEN FEATURE: Clean up any remaining duplicates after all processing
+    if (state.processedData.length > 0) {
+        cleanupExistingDuplicates();
+        // Re-create search index after cleanup
+        await createSearchIndex();
+    }
+
+    updateFilesListUI(); // Direct call to ui.js function
+    updateDataSummary(); // Direct call to ui.js function
+    await updateUI();      // Direct call to ui.js function
+
+    if(state.processedData.length > 0) {
+        enableDependentFeatures(); // Direct call to ui.js function
+        updateUploadAreaState(); // Direct call to ui.js function
+        
+        // 🔧 Ensure search inputs are enabled after cleanup
+        if (elements.searchInput) {
+            elements.searchInput.disabled = false;
+            elements.searchInput.placeholder = "Search rooms, types, staff... Try 'Building: [name]'";
+        }
+        if (elements.searchInputMobile) {
+            elements.searchInputMobile.disabled = false;
+            elements.searchInputMobile.placeholder = "Search rooms, types, staff...";
+        }
+    }
+
+    if (state.processedData.length > 0 || Object.keys(state.customTags).length > 0) {
+        showSecurityReminder(); // Direct call to app.js function (made global)
+    }
+
+    showLoading(false);
+    setProcessingState(false, elements.processingIndicator);
 }
+
+// Make handleFiles globally accessible (this fixes the "handleFiles is not defined" error)
+window.handleFiles = handleFiles;
 
 // ==================== DEBUGGING FUNCTIONS ====================
 
