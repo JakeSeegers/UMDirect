@@ -1,4 +1,4 @@
-// === SECURE SUPABASE CONFIG - REPLACE YOUR ENTIRE supabase-config.js ===
+// === FIXED SUPABASE CONFIG - WORKSPACE TAG DELETION ===
 
 // ✅ SAFE: Modern publishable key (secure for client-side use)
 const SUPABASE_URL = 'https://pzcqsorfobygydxkdmzc.supabase.co';
@@ -116,8 +116,12 @@ async function saveTagToWorkspace(roomId, tagObject) {
     }
     
     try {
+        // 🔧 FIXED: Use consistent type conversion for room lookup
         const room = state.processedData.find(r => r.id.toString() === roomId.toString());
-        if (!room) return false;
+        if (!room) {
+            console.error(`❌ Room not found for ID: ${roomId}`);
+            return false;
+        }
         
         const tagData = {
             workspace_id: collaborationState.currentWorkspace.id,
@@ -158,23 +162,68 @@ async function saveTagToWorkspace(roomId, tagObject) {
     }
 }
 
+// 🔧 FIXED: Type mismatch bug in removeTagFromWorkspace
 async function removeTagFromWorkspace(roomId, tagObject) {
-    if (!supabaseClient || !collaborationState.currentWorkspace) return false;
+    if (!supabaseClient || !collaborationState.currentWorkspace) {
+        console.error('❌ Cannot delete: No Supabase client or workspace');
+        return false;
+    }
     
     try {
-        const room = state.processedData.find(r => r.id === roomId);
-        if (!room) return false;
+        console.log(`🗑️ Attempting to delete tag "${tagObject.name}" from room ${roomId}`);
         
-        const { error } = await supabaseClient
+        // 🔧 FIXED: Use .toString() comparison to handle string/number mismatch
+        const room = state.processedData.find(r => r.id.toString() === roomId.toString());
+        if (!room) {
+            console.error(`❌ Room not found for ID: ${roomId} (type: ${typeof roomId})`);
+            console.log('Available room IDs:', state.processedData.slice(0, 5).map(r => `${r.id} (${typeof r.id})`));
+            return false;
+        }
+        
+        console.log(`🏠 Found room: ${room.rmnbr} (rmrecnbr: ${room.rmrecnbr})`);
+        
+        // 🔧 ENHANCED: More robust deletion query with better logging
+        const deleteParams = {
+            workspace_id: collaborationState.currentWorkspace.id,
+            room_identifier: room.rmrecnbr || room.id,
+            tag_name: tagObject.name,
+            created_by: collaborationState.currentUser.name
+        };
+        
+        console.log('🔍 Delete parameters:', deleteParams);
+        
+        const { error, count } = await supabaseClient
             .from('workspace_tags')
-            .delete()
-            .eq('workspace_id', collaborationState.currentWorkspace.id)
-            .eq('room_identifier', room.rmrecnbr || room.id)
-            .eq('tag_name', tagObject.name)
-            .eq('created_by', collaborationState.currentUser.name);
+            .delete({ count: 'exact' })
+            .eq('workspace_id', deleteParams.workspace_id)
+            .eq('room_identifier', deleteParams.room_identifier)
+            .eq('tag_name', deleteParams.tag_name)
+            .eq('created_by', deleteParams.created_by);
             
-        if (error) throw error;
+        if (error) {
+            console.error('❌ Database delete error:', error);
+            throw error;
+        }
         
+        console.log(`✅ Database delete successful. Rows affected: ${count}`);
+        
+        if (count === 0) {
+            console.warn('⚠️ No rows were deleted. Tag might not exist or belong to different user.');
+            // Try a broader search to see what's in the database
+            const { data: existingTags } = await supabaseClient
+                .from('workspace_tags')
+                .select('*')
+                .eq('workspace_id', deleteParams.workspace_id)
+                .eq('room_identifier', deleteParams.room_identifier)
+                .eq('tag_name', deleteParams.tag_name);
+                
+            if (existingTags && existingTags.length > 0) {
+                console.log('🔍 Found similar tags in database:', existingTags);
+                console.log(`Tag created by: "${existingTags[0].created_by}", Current user: "${deleteParams.created_by}"`);
+            }
+        }
+        
+        // Broadcast deletion to other users
         if (collaborationState.activeChannel) {
             await collaborationState.activeChannel.send({
                 type: 'broadcast',
@@ -182,12 +231,13 @@ async function removeTagFromWorkspace(roomId, tagObject) {
                 payload: {
                     room_id: roomId,
                     tag_name: tagObject.name,
-                    user: collaborationState.currentUser.name
+                    user: collaborationState.currentUser.name,
+                    timestamp: new Date().toISOString()
                 }
             });
         }
         
-        console.log('✅ Tag removed securely:', tagObject.name);
+        console.log('✅ Tag deletion completed:', tagObject.name);
         return true;
         
     } catch (error) {
@@ -200,6 +250,8 @@ async function syncWorkspaceTags() {
     if (!supabaseClient || !collaborationState.currentWorkspace) return;
     
     try {
+        console.log('🔄 Syncing workspace tags...');
+        
         const { data: tags, error } = await supabaseClient
             .from('workspace_tags')
             .select('*')
@@ -207,18 +259,21 @@ async function syncWorkspaceTags() {
             
         if (error) throw error;
         
+        // Clear existing workspace tags from local state
         Object.keys(state.customTags).forEach(roomId => {
             state.customTags[roomId] = state.customTags[roomId]?.filter(tag => !tag.workspace) || [];
         });
         
+        // Add tags from database
         tags.forEach(dbTag => {
             const roomId = findRoomIdByIdentifier(dbTag.room_identifier);
-            if (roomId) {
+            if (roomId !== null) {
                 if (!state.customTags[roomId]) state.customTags[roomId] = [];
                 
                 const tagObject = JSON.parse(dbTag.tag_data);
                 tagObject.workspace = true;
                 tagObject.created_by = dbTag.created_by;
+                tagObject.db_id = dbTag.id; // Store database ID for reference
                 
                 state.customTags[roomId].push(tagObject);
             }
@@ -267,6 +322,7 @@ async function initializeRealtimeCollaboration(workspaceId) {
                 table: 'workspace_tags',
                 filter: `workspace_id=eq.${workspaceId}`
             }, (payload) => {
+                console.log('📡 Database change detected:', payload);
                 syncWorkspaceTags();
             });
         
@@ -294,12 +350,19 @@ async function initializeRealtimeCollaboration(workspaceId) {
     }
 }
 
-// Utility functions
+// 🔧 ENHANCED: More robust room identifier lookup
 function findRoomIdByIdentifier(identifier) {
+    // Try different identification strategies with proper type conversion
     let room = state.processedData.find(r => String(r.rmrecnbr) === String(identifier));
     if (!room) room = state.processedData.find(r => r.id.toString() === identifier.toString());
     if (!room) room = state.processedData.find(r => String(r.rmnbr) === String(identifier));
-    return room ? room.id : null;
+    
+    if (room) {
+        return room.id;
+    }
+    
+    console.warn(`❌ Could not find room for identifier: ${identifier}`);
+    return null;
 }
 
 function updateOnlineUsers(presenceState) {
@@ -355,6 +418,7 @@ function leaveWorkspace() {
         collaborationState.activeChannel.unsubscribe();
     }
     
+    // Remove workspace tags from local state
     Object.keys(state.customTags).forEach(roomId => {
         state.customTags[roomId] = state.customTags[roomId]?.filter(tag => !tag.workspace) || [];
     });
@@ -381,7 +445,7 @@ function sanitizeHTML(text) {
     return temp.innerHTML;
 }
 
-// Export functions
+// 🔧 FIX #2: Expose supabaseClient for debugging
 window.workspaceCollaboration = {
     initializeSupabase,
     createWorkspace,
@@ -390,5 +454,32 @@ window.workspaceCollaboration = {
     removeTagFromWorkspace,
     syncWorkspaceTags,
     leaveWorkspace,
-    collaborationState
+    collaborationState,
+    
+    // 🔧 NEW: Expose supabaseClient for debugging
+    get supabaseClient() {
+        return supabaseClient;
+    },
+    
+    // 🔧 NEW: Debug helper functions
+    async debugWorkspaceTags() {
+        if (!supabaseClient || !collaborationState.currentWorkspace) {
+            console.log('❌ Not connected to workspace');
+            return;
+        }
+        
+        const { data: tags, error } = await supabaseClient
+            .from('workspace_tags')
+            .select('*')
+            .eq('workspace_id', collaborationState.currentWorkspace.id);
+            
+        if (error) {
+            console.error('❌ Debug query failed:', error);
+            return;
+        }
+        
+        console.log(`📊 Found ${tags.length} tags in database:`);
+        console.table(tags);
+        return tags;
+    }
 };
