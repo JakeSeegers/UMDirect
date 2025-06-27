@@ -1509,3 +1509,17 @@ window.debugBuildings = debugBuildings;
 window.debugRoomTags = debugRoomTags;
 window.debugFilters = debugFilters;
 window.testSearchPatterns = testSearchPatterns;
+
+// Make essential functions globally accessible
+window.handleFiles = handleFiles;
+window.exportCustomTags = exportCustomTags;
+window.importCustomTags = importCustomTags;
+window.exportSession = exportSession;
+window.importSession = importSession;
+window.data_getFilteredData = data_getFilteredData;
+window.createSearchIndex = createSearchIndex;
+window.updateAutocomplete = updateAutocomplete;
+window.hideAutocomplete = hideAutocomplete;
+window.handleAutocompleteKeydown = handleAutocompleteKeydown;
+window.normalizeAbbreviation = normalizeAbbreviation;
+window.generateTags = generateTags;
