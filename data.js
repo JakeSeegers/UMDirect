@@ -324,22 +324,7 @@ function calculateTermMatch(term, room, roomTags) {
     return { matched, score };
 }
 
-// ==================== FILE PARSING FUNCTIONS ====================
-
-async function parseFile(file) {
-    const fileType = file.name.split('.').pop().toLowerCase();
-    updateLoadingStatus(`Parsing ${file.name}...`);
-    if (fileType === 'csv') {
-        const text = await file.text();
-        return Papa.parse(text, { header: true, skipEmptyLines: true, dynamicTyping: true }).data;
-    } else if (['xlsx', 'xls'].includes(fileType)) {
-        const ab = await file.arrayBuffer();
-        const wb = XLSX.read(ab);
-        return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-    }
-    throw new Error('Unsupported file type for parsing.');
-}
-
+// UPDATED processRoomData function with enhanced duplicate detection
 async function processRoomData(data) {
     updateLoadingStatus('Processing room data...');
     const processed = [];
@@ -349,18 +334,24 @@ async function processRoomData(data) {
     const tags = new Set();
     let uniqueIdCounter = state.processedData.length;
     
-    // Create a Map of existing rooms for quick duplicate checking
+    // Create a comprehensive duplicate detection system
     const existingRoomsMap = new Map();
+    const existingRoomsByComposite = new Map();
+    
     state.processedData.forEach(room => {
+        // Primary key: rmrecnbr
         if (room.rmrecnbr) {
             existingRoomsMap.set(room.rmrecnbr.toString(), room);
         }
+        // Secondary key: composite of room number, floor, and building
+        const compositeKey = `${room.rmnbr}_${room.floor}_${(room.bld_descrshort || room.building || 'unknown').toLowerCase()}`;
+        existingRoomsByComposite.set(compositeKey, room);
     });
     
-    // Track processed room record numbers in this batch to avoid duplicates within the new data
+    // Track processed rooms in this batch (hidden from user)
     const processedInBatch = new Set();
-    let duplicatesSkipped = 0;
-    let duplicatesUpdated = 0;
+    let hiddenDuplicatesSkipped = 0;
+    let hiddenRoomsUpdated = 0;
 
     data.forEach((row) => {
         if (!row.rmnbr || typeof row.floor === 'undefined' || row.floor === null) {
@@ -368,14 +359,27 @@ async function processRoomData(data) {
              return;
         }
 
-        // Check for duplicates using rmrecnbr as unique identifier
-        const roomKey = row.rmrecnbr ? row.rmrecnbr.toString() : `${row.rmnbr}_${row.floor}_${row.bld_descrshort || 'unknown'}`;
+        // Multi-level duplicate detection (hidden feature)
+        let roomKey = null;
+        let existingRoom = null;
         
-        // Skip if we've already processed this room in this batch
+        // Level 1: Check by rmrecnbr (most reliable)
+        if (row.rmrecnbr) {
+            roomKey = row.rmrecnbr.toString();
+            existingRoom = existingRoomsMap.get(roomKey);
+        }
+        
+        // Level 2: Check by composite key if no rmrecnbr match
+        if (!existingRoom) {
+            const building = (row.bld_descrshort || row.building || 'unknown').toLowerCase();
+            roomKey = `${row.rmnbr}_${row.floor}_${building}`;
+            existingRoom = existingRoomsByComposite.get(roomKey);
+        }
+        
+        // Level 3: Check within current batch
         if (processedInBatch.has(roomKey)) {
-            duplicatesSkipped++;
-            console.log(`Duplicate in batch skipped: ${roomKey}`);
-            return;
+            hiddenDuplicatesSkipped++;
+            return; // Silently skip duplicate
         }
         
         // FIXED: Consistent building handling
@@ -384,7 +388,7 @@ async function processRoomData(data) {
 
         const type = normalizeAbbreviation(row.rmtyp_descrshort, unmapped);
         const sub = normalizeAbbreviation(row.rmsubtyp_descrshort, unmapped);
-        const normalizedDept = normalizeAbbreviation(row.dept_descr, unmapped); // Normalize department
+        const normalizedDept = normalizeAbbreviation(row.dept_descr, unmapped);
 
         let full = type;
         if (sub && type !== sub) {
@@ -396,7 +400,7 @@ async function processRoomData(data) {
             full = type;
         }
 
-        const rowTags = generateTags(full, normalizedDept); // Use normalized department
+        const rowTags = generateTags(full, normalizedDept);
         rowTags.forEach(t => tags.add(t));
         floors.add(row.floor.toString());
 
@@ -404,25 +408,22 @@ async function processRoomData(data) {
             ...row,
             id: uniqueIdCounter++,
             typeFull: full,
-            dept_descr: normalizedDept, // Store the normalized department name
+            dept_descr: normalizedDept,
             tags: rowTags,
             mgisLink: generateMgisLink(row),
-            building: building, // FIXED: Always use the consistent building value
-            bld_descrshort: row.bld_descrshort || building // Keep original for reference
+            building: building,
+            bld_descrshort: row.bld_descrshort || building
         };
 
-        // Check if this room already exists in the current data
-        if (row.rmrecnbr && existingRoomsMap.has(row.rmrecnbr.toString())) {
-            // Update existing room with new data
-            const existingRoom = existingRoomsMap.get(row.rmrecnbr.toString());
+        // Handle existing room update or new room addition
+        if (existingRoom) {
+            // Silently update existing room with new data
             const existingIndex = state.processedData.findIndex(r => r.id === existingRoom.id);
-            
             if (existingIndex !== -1) {
                 // Preserve the original ID and any custom/staff tags
                 processedRoom.id = existingRoom.id;
                 state.processedData[existingIndex] = processedRoom;
-                duplicatesUpdated++;
-                console.log(`Room updated: ${roomKey}`);
+                hiddenRoomsUpdated++;
             }
         } else {
             // Add new room
@@ -432,10 +433,11 @@ async function processRoomData(data) {
         processedInBatch.add(roomKey);
     });
 
+    // Update building colors
     const buildingsArray = Array.from(buildings);
     buildingsArray.forEach((b, index) => {
         if (!state.buildingColors[b]) {
-            state.buildingColors[b] = assignBuildingColor(b, Object.keys(state.buildingColors).length); // Direct call to ui.js function
+            state.buildingColors[b] = assignBuildingColor(b, Object.keys(state.buildingColors).length);
         }
     });
 
@@ -448,123 +450,108 @@ async function processRoomData(data) {
     state.availableTags = [...new Set([...state.availableTags, ...Array.from(tags)])].sort();
     state.currentPage = 1;
 
-    // Log deduplication results
-    if (duplicatesSkipped > 0 || duplicatesUpdated > 0) {
-        console.log(`✅ Deduplication complete: ${duplicatesSkipped} duplicates skipped, ${duplicatesUpdated} rooms updated, ${processed.length} new rooms added`);
-        addError(`Deduplication: ${duplicatesSkipped} duplicates skipped, ${duplicatesUpdated} rooms updated, ${processed.length} new rooms added`);
+    // Hidden feature: Log deduplication silently (dev console only, no user notification)
+    if (hiddenDuplicatesSkipped > 0 || hiddenRoomsUpdated > 0) {
+        console.log(`🔒 Hidden deduplication: ${hiddenDuplicatesSkipped} duplicates prevented, ${hiddenRoomsUpdated} rooms updated, ${processed.length} new rooms added`);
+        // Note: Removed addError() call to keep this feature hidden from users
     }
 
     updateLoadingStatus('Creating search index...');
     await createSearchIndex();
 }
 
-async function processOccupantData(data) {
-    updateLoadingStatus('Processing occupant data...');
-    data.forEach(occ => {
-        if (!occ.rmrecnbr || !occ.person_name) return;
-        const room = state.processedData.find(r => String(r.rmrecnbr) === String(occ.rmrecnbr));
-        if (room) {
-            if (!state.staffTags[room.id]) {
-                state.staffTags[room.id] = [];
-            }
-            const staffTag = `Staff: ${occ.person_name.trim()}`;
-            if (!state.staffTags[room.id].includes(staffTag)) {
-                state.staffTags[room.id].push(staffTag);
-            }
+// 🔒 HIDDEN FEATURE: Post-processing duplicate cleanup
+// This runs after all files are processed to clean up any existing duplicates in the state
+function cleanupExistingDuplicates() {
+    if (state.processedData.length === 0) return;
+    
+    const uniqueRooms = new Map();
+    const duplicatesFound = [];
+    let cleanedCount = 0;
+    
+    // Build a map of unique rooms using multiple identification strategies
+    state.processedData.forEach((room, index) => {
+        let uniqueKey = null;
+        
+        // Strategy 1: Use rmrecnbr if available (most reliable)
+        if (room.rmrecnbr) {
+            uniqueKey = `rec_${room.rmrecnbr}`;
+        }
+        // Strategy 2: Use composite key of room number + floor + building
+        else {
+            const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+            uniqueKey = `comp_${room.rmnbr}_${room.floor}_${building}`;
+        }
+        
+        if (uniqueRooms.has(uniqueKey)) {
+            // Found duplicate - keep the first one, mark this for removal
+            duplicatesFound.push(index);
+            cleanedCount++;
+        } else {
+            uniqueRooms.set(uniqueKey, room);
         }
     });
-    state.currentPage = 1;
-    await createSearchIndex();
-}
-
-async function processRoomDataFiles(files) {
-    let allRoomData = [];
-    for (const file of files) {
-        try {
-            const data = await parseFile(file);
-            allRoomData = allRoomData.concat(data);
-            state.loadedFiles.push({ name: file.name, type: 'room', rows: data.length, status: 'processed' });
-        } catch (e) {
-            addError(`Room Data Error (${file.name}): ${e.message}`);
-            state.loadedFiles.push({ name: file.name, type: 'room', status: 'error', message: e.message });
-        }
-    }
-    if (allRoomData.length > 0) {
-        await processRoomData(allRoomData);
-    }
-}
-
-async function processOccupantDataFiles(files) {
-    let allOccupantData = [];
-    for (const file of files) {
-        try {
-            const data = await parseFile(file);
-            allOccupantData = allOccupantData.concat(data);
-            state.loadedFiles.push({ name: file.name, type: 'occupant', rows: data.length, status: 'processed' });
-        } catch (e) {
-            addError(`Occupant Data Error (${file.name}): ${e.message}`);
-            state.loadedFiles.push({ name: file.name, type: 'occupant', status: 'error', message: e.message });
-        }
-    }
-    if (allOccupantData.length > 0) {
-        await processOccupantData(allOccupantData);
-    }
-}
-
-async function handleFiles(files) {
-    showLoading(true);
-    setProcessingState(true, elements.processingIndicator);
-    clearErrors();
-    let roomDataFiles = [], occupantDataFiles = [], tagFiles = [], sessionFiles = [];
-
-    for (const file of files) {
-        const fileType = file.name.split('.').pop().toLowerCase();
-        if (fileType === 'json') {
-            tagFiles.push(file);
-        } else if (fileType === 'umsess') {
-            sessionFiles.push(file);
-        } else if (['xlsx', 'xls', 'csv'].includes(fileType)) {
-            if (file.name.toLowerCase().includes('occupant') || file.name.toLowerCase().includes('staff')) {
-                occupantDataFiles.push(file);
-            } else {
-                roomDataFiles.push(file);
+    
+    // Remove duplicates by filtering out the marked indices
+    if (duplicatesFound.length > 0) {
+        // Create new array without duplicates, preserving custom/staff tags for kept rooms
+        const cleanedData = state.processedData.filter((room, index) => {
+            const shouldKeep = !duplicatesFound.includes(index);
+            
+            // If we're removing this room, transfer its tags to the kept duplicate
+            if (!shouldKeep) {
+                const building = (room.bld_descrshort || room.building || 'unknown').toLowerCase().trim();
+                const uniqueKey = room.rmrecnbr ? `rec_${room.rmrecnbr}` : `comp_${room.rmnbr}_${room.floor}_${building}`;
+                const keptRoom = Array.from(uniqueRooms.values()).find(r => {
+                    const keptKey = r.rmrecnbr ? `rec_${r.rmrecnbr}` : `comp_${r.rmnbr}_${r.floor}_${(r.bld_descrshort || r.building || 'unknown').toLowerCase().trim()}`;
+                    return keptKey === uniqueKey;
+                });
+                
+                if (keptRoom) {
+                    // Transfer custom tags
+                    const removedCustomTags = state.customTags[room.id] || [];
+                    const keptCustomTags = state.customTags[keptRoom.id] || [];
+                    if (removedCustomTags.length > 0) {
+                        state.customTags[keptRoom.id] = [...keptCustomTags, ...removedCustomTags];
+                        delete state.customTags[room.id];
+                    }
+                    
+                    // Transfer staff tags
+                    const removedStaffTags = state.staffTags[room.id] || [];
+                    const keptStaffTags = state.staffTags[keptRoom.id] || [];
+                    if (removedStaffTags.length > 0) {
+                        // Merge and deduplicate staff tags
+                        state.staffTags[keptRoom.id] = [...new Set([...keptStaffTags, ...removedStaffTags])];
+                        delete state.staffTags[room.id];
+                    }
+                }
             }
-        } else {
-            addError(`Unsupported file type: ${file.name}`);
-            state.loadedFiles.push({ name: file.name, type: 'unsupported', status: 'error', message: 'Unsupported type' });
-        }
+            
+            return shouldKeep;
+        });
+        
+        state.processedData = cleanedData;
+        
+        // Reassign sequential IDs to prevent gaps
+        state.processedData.forEach((room, index) => {
+            const oldId = room.id;
+            room.id = index;
+            
+            // Update tag references if ID changed
+            if (oldId !== index) {
+                if (state.customTags[oldId]) {
+                    state.customTags[index] = state.customTags[oldId];
+                    delete state.customTags[oldId];
+                }
+                if (state.staffTags[oldId]) {
+                    state.staffTags[index] = state.staffTags[oldId];
+                    delete state.staffTags[oldId];
+                }
+            }
+        });
+        
+        console.log(`🔒 Hidden cleanup: Removed ${cleanedCount} duplicate rooms, preserved all tags`);
     }
-
-    if (sessionFiles.length > 0) {
-        for (const sessionFile of sessionFiles) {
-            await importSession(sessionFile);
-        }
-    }
-    if (roomDataFiles.length > 0) {
-        await processRoomDataFiles(roomDataFiles);
-    }
-    if (occupantDataFiles.length > 0) {
-        await processOccupantDataFiles(occupantDataFiles);
-    }
-    for (const tagFile of tagFiles) {
-        await importCustomTags(tagFile);
-    }
-
-    updateFilesListUI(); // Direct call to ui.js function
-    updateDataSummary(); // Direct call to ui.js function
-    await updateUI();      // Direct call to ui.js function
-
-    if(state.processedData.length > 0) {
-        enableDependentFeatures(); // Direct call to ui.js function
-        updateUploadAreaState(); // Direct call to ui.js function
-    }
-
-    if (state.processedData.length > 0 || Object.keys(state.customTags).length > 0) {
-        showSecurityReminder(); // Direct call to app.js function (made global)
-    }
-
-    showLoading(false);
-    setProcessingState(false, elements.processingIndicator);
 }
 
 // ==================== EXPORT/IMPORT FUNCTIONS ====================
@@ -1118,6 +1105,139 @@ function handleAutocompleteKeydown(e) {
     }
     state.autocompleteActiveIndex = newIndex;
 }
+
+// ==================== FILE PARSING FUNCTIONS ====================
+
+async function parseFile(file) {
+    const fileType = file.name.split('.').pop().toLowerCase();
+    updateLoadingStatus(`Parsing ${file.name}...`);
+    if (fileType === 'csv') {
+        const text = await file.text();
+        return Papa.parse(text, { header: true, skipEmptyLines: true, dynamicTyping: true }).data;
+    } else if (['xlsx', 'xls'].includes(fileType)) {
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab);
+        return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+    }
+    throw new Error('Unsupported file type for parsing.');
+}
+
+async function processOccupantData(data) {
+    updateLoadingStatus('Processing occupant data...');
+    data.forEach(occ => {
+        if (!occ.rmrecnbr || !occ.person_name) return;
+        const room = state.processedData.find(r => String(r.rmrecnbr) === String(occ.rmrecnbr));
+        if (room) {
+            if (!state.staffTags[room.id]) {
+                state.staffTags[room.id] = [];
+            }
+            const staffTag = `Staff: ${occ.person_name.trim()}`;
+            if (!state.staffTags[room.id].includes(staffTag)) {
+                state.staffTags[room.id].push(staffTag);
+            }
+        }
+    });
+    state.currentPage = 1;
+    await createSearchIndex();
+}
+
+async function processRoomDataFiles(files) {
+    let allRoomData = [];
+    for (const file of files) {
+        try {
+            const data = await parseFile(file);
+            allRoomData = allRoomData.concat(data);
+            state.loadedFiles.push({ name: file.name, type: 'room', rows: data.length, status: 'processed' });
+        } catch (e) {
+            addError(`Room Data Error (${file.name}): ${e.message}`);
+            state.loadedFiles.push({ name: file.name, type: 'room', status: 'error', message: e.message });
+        }
+    }
+    if (allRoomData.length > 0) {
+        await processRoomData(allRoomData);
+    }
+}
+
+async function processOccupantDataFiles(files) {
+    let allOccupantData = [];
+    for (const file of files) {
+        try {
+            const data = await parseFile(file);
+            allOccupantData = allOccupantData.concat(data);
+            state.loadedFiles.push({ name: file.name, type: 'occupant', rows: data.length, status: 'processed' });
+        } catch (e) {
+            addError(`Occupant Data Error (${file.name}): ${e.message}`);
+            state.loadedFiles.push({ name: file.name, type: 'occupant', status: 'error', message: e.message });
+        }
+    }
+    if (allOccupantData.length > 0) {
+        await processOccupantData(allOccupantData);
+    }
+}
+
+async function handleFiles(files) {
+    showLoading(true);
+    setProcessingState(true, elements.processingIndicator);
+    clearErrors();
+    let roomDataFiles = [], occupantDataFiles = [], tagFiles = [], sessionFiles = [];
+
+    for (const file of files) {
+        const fileType = file.name.split('.').pop().toLowerCase();
+        if (fileType === 'json') {
+            tagFiles.push(file);
+        } else if (fileType === 'umsess') {
+            sessionFiles.push(file);
+        } else if (['xlsx', 'xls', 'csv'].includes(fileType)) {
+            if (file.name.toLowerCase().includes('occupant') || file.name.toLowerCase().includes('staff')) {
+                occupantDataFiles.push(file);
+            } else {
+                roomDataFiles.push(file);
+            }
+        } else {
+            addError(`Unsupported file type: ${file.name}`);
+            state.loadedFiles.push({ name: file.name, type: 'unsupported', status: 'error', message: 'Unsupported type' });
+        }
+    }
+
+    if (sessionFiles.length > 0) {
+        for (const sessionFile of sessionFiles) {
+            await importSession(sessionFile);
+        }
+    }
+    if (roomDataFiles.length > 0) {
+        await processRoomDataFiles(roomDataFiles);
+    }
+    if (occupantDataFiles.length > 0) {
+        await processOccupantDataFiles(occupantDataFiles);
+    }
+    for (const tagFile of tagFiles) {
+        await importCustomTags(tagFile);
+    }
+
+    // 🔒 HIDDEN FEATURE: Clean up any remaining duplicates after all processing
+    if (state.processedData.length > 0) {
+        cleanupExistingDuplicates();
+    }
+
+    updateFilesListUI(); // Direct call to ui.js function
+    updateDataSummary(); // Direct call to ui.js function
+    await updateUI();      // Direct call to ui.js function
+
+    if(state.processedData.length > 0) {
+        enableDependentFeatures(); // Direct call to ui.js function
+        updateUploadAreaState(); // Direct call to ui.js function
+    }
+
+    if (state.processedData.length > 0 || Object.keys(state.customTags).length > 0) {
+        showSecurityReminder(); // Direct call to app.js function (made global)
+    }
+
+    showLoading(false);
+    setProcessingState(false, elements.processingIndicator);
+}
+
+// Make handleFiles globally accessible (this fixes the "handleFiles is not defined" error)
+window.handleFiles = handleFiles;
 
 // ==================== DEBUGGING FUNCTIONS ====================
 
