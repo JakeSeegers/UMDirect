@@ -45,6 +45,21 @@ function hideMgisComplianceModal() {
 
 // --- WORKSPACE COLLABORATION MODAL FUNCTIONS ---
 function handleCollaborationButtonClick() {
+    // 🔧 FIX: Check if workspaceCollaboration exists first
+    if (!window.workspaceCollaboration) {
+        console.error('❌ Workspace collaboration not loaded yet');
+        alert('Workspace system is still loading. Please wait a moment and try again.');
+        return;
+    }
+    
+    // 🔧 FIX: Check if collaborationState exists
+    if (!window.workspaceCollaboration.collaborationState) {
+        console.error('❌ Collaboration state not initialized');
+        alert('Workspace system not ready. Please refresh the page.');
+        return;
+    }
+    
+    // Now safely check if online
     if (window.workspaceCollaboration.collaborationState.isOnline) {
         // Already connected, offer to leave workspace
         const workspaceName = window.workspaceCollaboration.collaborationState.currentWorkspace?.name;
